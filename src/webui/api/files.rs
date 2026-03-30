@@ -44,8 +44,10 @@ pub struct ListQuery {
 }
 
 fn sanitize_path(path: &str) -> Result<String, StatusCode> {
-    // Prevent path traversal
-    let normalized = path.replace('\\', "/");
+    // Decode percent-encoded characters before checking for traversal
+    let decoded = urlencoding_decode(path);
+    let normalized = decoded.replace('\\', "/");
+    // Prevent path traversal (including percent-encoded variants)
     if normalized.contains("..") {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -55,6 +57,36 @@ fn sanitize_path(path: &str) -> Result<String, StatusCode> {
         format!("/{}", normalized)
     };
     Ok(clean)
+}
+
+fn urlencoding_decode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.bytes();
+    while let Some(b) = chars.next() {
+        if b == b'%' {
+            let hi = chars.next();
+            let lo = chars.next();
+            if let (Some(h), Some(l)) = (hi, lo) {
+                if let (Some(hv), Some(lv)) = (hex_val(h), hex_val(l)) {
+                    result.push((hv << 4 | lv) as char);
+                    continue;
+                }
+            }
+            result.push('%');
+        } else {
+            result.push(b as char);
+        }
+    }
+    result
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// GET /api/files/*path - List directory or get file info

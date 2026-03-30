@@ -89,6 +89,9 @@ async fn main() -> anyhow::Result<()> {
     // Setup auth state
     let webui_username = std::env::var("WEBUI_USERNAME").unwrap_or_else(|_| "admin".to_string());
     let webui_password = std::env::var("WEBUI_PASSWORD").unwrap_or_else(|_| "admin".to_string());
+    if std::env::var("WEBUI_PASSWORD").is_err() {
+        tracing::warn!("⚠️  Using default WebUI password. Set WEBUI_PASSWORD environment variable for production use!");
+    }
     let password_hash = bcrypt::hash(&webui_password, bcrypt::DEFAULT_COST)
         .expect("Failed to hash password");
     

@@ -3,24 +3,53 @@
 use axum::{
     extract::{
         ws::{Message, WebSocket},
-        State, WebSocketUpgrade,
+        Query, State, WebSocketUpgrade,
     },
+    http::StatusCode,
     response::IntoResponse,
 };
 use futures_util::{SinkExt, StreamExt};
+use jsonwebtoken::{decode, DecodingKey, Validation};
+use serde::Deserialize;
 use std::time::Duration;
 use tokio::time::interval;
 
+use super::auth::Claims;
 use super::state::AppState;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 
+#[derive(Deserialize)]
+pub struct WsQuery {
+    pub token: Option<String>,
+}
+
 /// WebSocket upgrade handler at /ws
+/// Requires ?token=<jwt> query parameter for authentication
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    Query(query): Query<WsQuery>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+    // Validate JWT token from query parameter
+    let token = match &query.token {
+        Some(t) => t,
+        None => return StatusCode::UNAUTHORIZED.into_response(),
+    };
+
+    let result = decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(state.auth_state.jwt_secret.as_bytes()),
+        &Validation::default(),
+    );
+
+    match result {
+        Ok(data) if data.claims.token_type == "access" => {
+            ws.on_upgrade(move |socket| handle_socket(socket, state))
+                .into_response()
+        }
+        _ => StatusCode::UNAUTHORIZED.into_response(),
+    }
 }
 
 async fn handle_socket(socket: WebSocket, state: AppState) {
