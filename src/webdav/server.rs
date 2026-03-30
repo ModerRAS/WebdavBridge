@@ -269,11 +269,7 @@ impl WebdavServer {
         };
 
         // Check for cycles
-        if self.metadata_cache.would_create_cycle(dest_path, &target, self.max_symlink_depth).await {
-            return Err(WebdavError::SymlinkCycle(
-                format!("Creating symlink {} -> {} would create a cycle", dest_path, target),
-            ));
-        }
+        self.metadata_cache.check_symlink_safety(dest_path, &target, self.max_symlink_depth).await?;
 
         if src_resource.is_dir {
             // Directory copy: recursively create symlinks for all children

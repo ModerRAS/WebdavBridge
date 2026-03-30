@@ -147,24 +147,36 @@ impl MetadataCache {
     }
 
     /// Check for symlink cycles: would creating a symlink from `path` to `target` create a cycle?
-    pub async fn would_create_cycle(&self, path: &str, target: &str, max_depth: u32) -> bool {
-        // A cycle exists if following symlinks from `target` leads back to `path`
+    /// Returns Ok(()) if safe, or an appropriate error if cyclic or too deep.
+    pub async fn check_symlink_safety(&self, path: &str, target: &str, max_depth: u32) -> Result<(), WebdavError> {
         let mut current = target.to_string();
         let mut depth = 0;
         while depth < max_depth {
             if current == path {
-                return true;
+                return Err(WebdavError::SymlinkCycle(
+                    format!("Cycle detected: {} -> ... -> {}", path, path),
+                ));
             }
             match self.get_symlink_target(&current).await {
                 Some(next_target) => {
                     current = next_target;
                     depth += 1;
                 }
-                None => return false,
+                None => return Ok(()),
             }
         }
-        // If we exceeded max depth, treat as problematic
-        true
+        // Check one last time if current == path after the loop
+        if current == path {
+            return Err(WebdavError::SymlinkCycle(
+                format!("Cycle detected: {} -> ... -> {}", path, path),
+            ));
+        }
+        Err(WebdavError::SymlinkDepthExceeded { max_depth })
+    }
+
+    /// Check for symlink cycles (backward-compatible convenience method)
+    pub async fn would_create_cycle(&self, path: &str, target: &str, max_depth: u32) -> bool {
+        self.check_symlink_safety(path, target, max_depth).await.is_err()
     }
 }
 

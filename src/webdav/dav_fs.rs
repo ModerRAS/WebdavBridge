@@ -210,13 +210,13 @@ impl DavFile for DavFileHandle {
     }
 
     fn flush(&mut self) -> FsFuture<'_, ()> {
-        let body = Bytes::from(std::mem::take(&mut self.write_buf));
+        if self.write_buf.is_empty() {
+            return Box::pin(async { Ok(()) });
+        }
+        let body = Bytes::from(self.write_buf.clone());
         let server = self.server.clone();
         let path = self.path.clone();
         Box::pin(async move {
-            if body.is_empty() {
-                return Ok(());
-            }
             match server.handle_put(&path, body).await {
                 Ok(_) => Ok(()),
                 Err(crate::webdav::types::WebdavError::Forbidden(_)) => Err(FsError::Forbidden),

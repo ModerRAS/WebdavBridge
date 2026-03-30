@@ -144,6 +144,9 @@ impl WebdavService {
                     Err(webdav_bridge::webdav::types::WebdavError::SymlinkCycle(msg)) => {
                         Response::builder().status(400).body(Full::new(Bytes::from(msg))).unwrap()
                     }
+                    Err(webdav_bridge::webdav::types::WebdavError::SymlinkDepthExceeded { max_depth }) => {
+                        Response::builder().status(400).body(Full::new(Bytes::from(format!("Symlink depth exceeded: max depth is {}", max_depth)))).unwrap()
+                    }
                     Err(e) => {
                         tracing::warn!("COPY {} failed: {}", path, e);
                         Response::builder().status(500).body(Full::new(Bytes::from("Internal error"))).unwrap()
