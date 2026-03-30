@@ -22,3 +22,6 @@ target
 
 # Sisyphus agent workspace
 .sisyphus/
+
+# Frontend
+frontend/node_modules/
