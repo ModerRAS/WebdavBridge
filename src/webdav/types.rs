@@ -392,4 +392,103 @@ mod tests {
         assert!(resource.modified.is_some());
         assert!(resource.supports_resume);
     }
+
+    #[test]
+    fn test_webdav_resource_new_symlink() {
+        let resource = WebdavResource::new_symlink(
+            "/local/link.mp4".to_string(),
+            "link.mp4".to_string(),
+            "/upstream/test.mp4".to_string(),
+            false,
+            1024,
+        );
+        assert_eq!(resource.path, "/local/link.mp4");
+        assert_eq!(resource.name, "link.mp4");
+        assert!(resource.is_symlink);
+        assert_eq!(resource.symlink_target, Some("/upstream/test.mp4".to_string()));
+        assert!(!resource.has_local_override);
+        assert!(!resource.is_dir);
+        assert_eq!(resource.size, 1024);
+    }
+
+    #[test]
+    fn test_webdav_resource_symlink_dir() {
+        let resource = WebdavResource::new_symlink(
+            "/local/movies".to_string(),
+            "movies".to_string(),
+            "/upstream/movies".to_string(),
+            true,
+            0,
+        );
+        assert!(resource.is_symlink);
+        assert!(resource.is_dir);
+        assert_eq!(resource.symlink_target, Some("/upstream/movies".to_string()));
+    }
+
+    #[test]
+    fn test_webdav_resource_symlink_with_content_type() {
+        let resource = WebdavResource::new_symlink(
+            "/local/link.mp4".to_string(),
+            "link.mp4".to_string(),
+            "/upstream/test.mp4".to_string(),
+            false,
+            1024,
+        )
+        .with_content_type("video/mp4".to_string());
+        assert_eq!(resource.content_type, Some("video/mp4".to_string()));
+    }
+
+    #[test]
+    fn test_webdav_resource_symlink_serialization() {
+        let resource = WebdavResource::new_symlink(
+            "/local/link.mp4".to_string(),
+            "link.mp4".to_string(),
+            "/upstream/test.mp4".to_string(),
+            false,
+            1024,
+        );
+
+        let json = serde_json::to_string(&resource).unwrap();
+        let deserialized: WebdavResource = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.is_symlink, true);
+        assert_eq!(deserialized.symlink_target, Some("/upstream/test.mp4".to_string()));
+        assert_eq!(deserialized.has_local_override, false);
+    }
+
+    #[test]
+    fn test_webdav_resource_normal_file_defaults() {
+        // Normal files should have symlink fields at default values
+        let resource = WebdavResource::new_file("/test.txt".to_string(), "test.txt".to_string(), 100);
+        assert!(!resource.is_symlink);
+        assert_eq!(resource.symlink_target, None);
+        assert!(!resource.has_local_override);
+
+        // Verify serialization/deserialization of normal files keeps defaults
+        let json = serde_json::to_string(&resource).unwrap();
+        let deserialized: WebdavResource = serde_json::from_str(&json).unwrap();
+        assert!(!deserialized.is_symlink);
+        assert_eq!(deserialized.symlink_target, None);
+        assert!(!deserialized.has_local_override);
+    }
+
+    #[test]
+    fn test_backward_compat_deserialization() {
+        // Simulate old JSON without symlink fields (backward compatibility)
+        let old_json = r#"{"path":"/test.txt","name":"test.txt","content_type":null,"size":100,"etag":null,"modified":null,"is_dir":false,"supports_resume":false}"#;
+        let resource: WebdavResource = serde_json::from_str(old_json).unwrap();
+        assert!(!resource.is_symlink);
+        assert_eq!(resource.symlink_target, None);
+        assert!(!resource.has_local_override);
+    }
+
+    #[test]
+    fn test_with_content_type_opt() {
+        let resource = WebdavResource::new_file("/test.mp4".to_string(), "test.mp4".to_string(), 100)
+            .with_content_type_opt(Some("video/mp4".to_string()));
+        assert_eq!(resource.content_type, Some("video/mp4".to_string()));
+
+        let resource2 = WebdavResource::new_file("/test.mp4".to_string(), "test.mp4".to_string(), 100)
+            .with_content_type_opt(None);
+        assert_eq!(resource2.content_type, None);
+    }
 }
