@@ -89,6 +89,83 @@ impl MetadataCache {
             .map_err(|e| WebdavError::CacheError(e.to_string()))?;
         Ok(())
     }
+
+    /// Check if a path is a symlink
+    pub async fn is_symlink(&self, path: &str) -> bool {
+        self.get(path).await.map(|r| r.is_symlink).unwrap_or(false)
+    }
+
+    /// Get the symlink target for a path
+    pub async fn get_symlink_target(&self, path: &str) -> Option<String> {
+        self.get(path).await.and_then(|r| {
+            if r.is_symlink {
+                r.symlink_target
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Set the local override flag for a symlink
+    pub async fn set_local_override(&self, path: &str, has_override: bool) -> Result<(), WebdavError> {
+        if let Some(mut resource) = self.get(path).await {
+            resource.has_local_override = has_override;
+            self.put(&resource).await?;
+        }
+        Ok(())
+    }
+
+    /// Check if a symlink has a local override
+    pub async fn has_local_override(&self, path: &str) -> bool {
+        self.get(path).await.map(|r| r.has_local_override).unwrap_or(false)
+    }
+
+    /// Find all symlinks pointing to a specific upstream target
+    pub async fn get_by_target(&self, target: &str) -> Vec<WebdavResource> {
+        let mut results = Vec::new();
+        for item in self.tree.iter() {
+            if let Ok((_, value)) = item {
+                if let Ok(resource) = serde_json::from_slice::<WebdavResource>(&value) {
+                    if resource.is_symlink && resource.symlink_target.as_deref() == Some(target) {
+                        results.push(resource);
+                    }
+                }
+            }
+        }
+        results
+    }
+
+    /// Delete all symlinks pointing to a specific upstream target (cascade delete)
+    pub async fn delete_by_target(&self, target: &str) -> Result<Vec<String>, WebdavError> {
+        let symlinks = self.get_by_target(target).await;
+        let mut deleted_paths = Vec::new();
+        for symlink in &symlinks {
+            self.delete(&symlink.path).await?;
+            deleted_paths.push(symlink.path.clone());
+        }
+        Ok(deleted_paths)
+    }
+
+    /// Check for symlink cycles: would creating a symlink from `path` to `target` create a cycle?
+    pub async fn would_create_cycle(&self, path: &str, target: &str, max_depth: u32) -> bool {
+        // A cycle exists if following symlinks from `target` leads back to `path`
+        let mut current = target.to_string();
+        let mut depth = 0;
+        while depth < max_depth {
+            if current == path {
+                return true;
+            }
+            match self.get_symlink_target(&current).await {
+                Some(next_target) => {
+                    current = next_target;
+                    depth += 1;
+                }
+                None => return false,
+            }
+        }
+        // If we exceeded max depth, treat as problematic
+        true
+    }
 }
 
 #[cfg(test)]

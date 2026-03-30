@@ -45,6 +45,17 @@ impl WebdavService {
         let if_range_header = req.headers()
             .get("If-Range")
             .and_then(|v: &HeaderValue| v.to_str().ok());
+
+        let destination_header = req.headers()
+            .get("Destination")
+            .and_then(|v: &HeaderValue| v.to_str().ok())
+            .map(|s: &str| s.to_string());
+
+        let overwrite_header = req.headers()
+            .get("Overwrite")
+            .and_then(|v: &HeaderValue| v.to_str().ok())
+            .map(|s| s != "F")
+            .unwrap_or(true);
         
         let response = match method {
             ref m if m.as_str() == "GET" => {
@@ -113,12 +124,118 @@ impl WebdavService {
                     }
                 }
             }
+            ref m if m.as_str() == "COPY" => {
+                let dest = match Self::extract_dest_path(&destination_header) {
+                    Some(d) => d,
+                    None => {
+                        return Ok(Response::builder().status(400).body(Full::new(Bytes::from("Missing or invalid Destination header"))).unwrap());
+                    }
+                };
+                match self.server.handle_copy(&path, &dest, overwrite_header).await {
+                    Ok(status) => {
+                        Response::builder().status(status).body(Full::new(Bytes::new())).unwrap()
+                    }
+                    Err(webdav_bridge::webdav::types::WebdavError::NotFound(_)) => {
+                        Response::builder().status(404).body(Full::new(Bytes::from("Not found"))).unwrap()
+                    }
+                    Err(webdav_bridge::webdav::types::WebdavError::PreconditionFailed(_)) => {
+                        Response::builder().status(412).body(Full::new(Bytes::from("Precondition Failed"))).unwrap()
+                    }
+                    Err(webdav_bridge::webdav::types::WebdavError::SymlinkCycle(msg)) => {
+                        Response::builder().status(400).body(Full::new(Bytes::from(msg))).unwrap()
+                    }
+                    Err(e) => {
+                        tracing::warn!("COPY {} failed: {}", path, e);
+                        Response::builder().status(500).body(Full::new(Bytes::from("Internal error"))).unwrap()
+                    }
+                }
+            }
+            ref m if m.as_str() == "MOVE" => {
+                let dest = match Self::extract_dest_path(&destination_header) {
+                    Some(d) => d,
+                    None => {
+                        return Ok(Response::builder().status(400).body(Full::new(Bytes::from("Missing or invalid Destination header"))).unwrap());
+                    }
+                };
+                match self.server.handle_move(&path, &dest, overwrite_header).await {
+                    Ok(status) => {
+                        Response::builder().status(status).body(Full::new(Bytes::new())).unwrap()
+                    }
+                    Err(webdav_bridge::webdav::types::WebdavError::NotFound(_)) => {
+                        Response::builder().status(404).body(Full::new(Bytes::from("Not found"))).unwrap()
+                    }
+                    Err(webdav_bridge::webdav::types::WebdavError::PreconditionFailed(_)) => {
+                        Response::builder().status(412).body(Full::new(Bytes::from("Precondition Failed"))).unwrap()
+                    }
+                    Err(webdav_bridge::webdav::types::WebdavError::Forbidden(_)) => {
+                        Response::builder().status(403).body(Full::new(Bytes::from("Forbidden"))).unwrap()
+                    }
+                    Err(e) => {
+                        tracing::warn!("MOVE {} failed: {}", path, e);
+                        Response::builder().status(500).body(Full::new(Bytes::from("Internal error"))).unwrap()
+                    }
+                }
+            }
+            ref m if m.as_str() == "PUT" => {
+                use http_body_util::BodyExt;
+                let body_bytes = match req.into_body().collect().await {
+                    Ok(collected) => collected.to_bytes(),
+                    Err(e) => {
+                        tracing::warn!("PUT {} failed to read body: {}", path, e);
+                        return Ok(Response::builder().status(400).body(Full::new(Bytes::from("Bad request"))).unwrap());
+                    }
+                };
+                match self.server.handle_put(&path, body_bytes).await {
+                    Ok(status) => {
+                        Response::builder().status(status).body(Full::new(Bytes::new())).unwrap()
+                    }
+                    Err(webdav_bridge::webdav::types::WebdavError::NotFound(_)) => {
+                        Response::builder().status(404).body(Full::new(Bytes::from("Not found"))).unwrap()
+                    }
+                    Err(webdav_bridge::webdav::types::WebdavError::Forbidden(_)) => {
+                        Response::builder().status(403).body(Full::new(Bytes::from("Forbidden"))).unwrap()
+                    }
+                    Err(e) => {
+                        tracing::warn!("PUT {} failed: {}", path, e);
+                        Response::builder().status(500).body(Full::new(Bytes::from("Internal error"))).unwrap()
+                    }
+                }
+            }
+            ref m if m.as_str() == "DELETE" => {
+                match self.server.handle_delete(&path).await {
+                    Ok(status) => {
+                        Response::builder().status(status).body(Full::new(Bytes::new())).unwrap()
+                    }
+                    Err(webdav_bridge::webdav::types::WebdavError::NotFound(_)) => {
+                        Response::builder().status(404).body(Full::new(Bytes::from("Not found"))).unwrap()
+                    }
+                    Err(webdav_bridge::webdav::types::WebdavError::Forbidden(_)) => {
+                        Response::builder().status(403).body(Full::new(Bytes::from("Forbidden"))).unwrap()
+                    }
+                    Err(e) => {
+                        tracing::warn!("DELETE {} failed: {}", path, e);
+                        Response::builder().status(500).body(Full::new(Bytes::from("Internal error"))).unwrap()
+                    }
+                }
+            }
             _ => {
                 Response::builder().status(405).body(Full::new(Bytes::from("Method not allowed"))).unwrap()
             }
         };
         
         Ok(response)
+    }
+
+    /// Extract destination path from the Destination header URL
+    fn extract_dest_path(destination: &Option<String>) -> Option<String> {
+        let dest = destination.as_deref()?;
+        // Destination can be a full URL or just a path
+        if let Ok(url) = url::Url::parse(dest) {
+            Some(url.path().to_string())
+        } else {
+            // Treat as path directly
+            Some(dest.to_string())
+        }
     }
     
     fn build_propfind_response(resources: &[webdav_bridge::webdav::types::WebdavResource]) -> String {
@@ -195,7 +312,9 @@ async fn main() -> anyhow::Result<()> {
     let webdav_server = webdav_bridge::webdav::server::WebdavServer::new(
         content_fetch_for_server,
         metadata_cache.clone(),
-    );
+    )
+    .with_content_cache(webdav_bridge::cache::content::ContentCache::new(&cache_dir))
+    .with_max_symlink_depth(config.max_symlink_depth);
 
     let metadata_update = webdav_bridge::tasks::metadata_update::MetadataUpdateTask::new(
         upstream,

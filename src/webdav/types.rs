@@ -26,6 +26,18 @@ pub struct WebdavResource {
 
     /// True if this resource supports resume (has etag or mtime)
     pub supports_resume: bool,
+
+    /// True if this resource is a symlink to an upstream path
+    #[serde(default)]
+    pub is_symlink: bool,
+
+    /// The upstream path this symlink points to (None for regular resources)
+    #[serde(default)]
+    pub symlink_target: Option<String>,
+
+    /// True if the symlink has a local override (written via PUT)
+    #[serde(default)]
+    pub has_local_override: bool,
 }
 
 impl WebdavResource {
@@ -40,6 +52,9 @@ impl WebdavResource {
             modified: None,
             is_dir: false,
             supports_resume: false,
+            is_symlink: false,
+            symlink_target: None,
+            has_local_override: false,
         }
     }
 
@@ -54,12 +69,38 @@ impl WebdavResource {
             modified: None,
             is_dir: true,
             supports_resume: false,
+            is_symlink: false,
+            symlink_target: None,
+            has_local_override: false,
+        }
+    }
+
+    /// Create a new symlink resource pointing to an upstream path
+    pub fn new_symlink(path: String, name: String, target: String, is_dir: bool, size: u64) -> Self {
+        Self {
+            path,
+            name,
+            content_type: None,
+            size,
+            etag: None,
+            modified: None,
+            is_dir,
+            supports_resume: false,
+            is_symlink: true,
+            symlink_target: Some(target),
+            has_local_override: false,
         }
     }
 
     /// Set content type from extension
     pub fn with_content_type(mut self, ct: String) -> Self {
         self.content_type = Some(ct);
+        self
+    }
+
+    /// Set content type from optional value
+    pub fn with_content_type_opt(mut self, ct: Option<String>) -> Self {
+        self.content_type = ct;
         self
     }
 
@@ -192,6 +233,18 @@ pub enum WebdavError {
 
     #[error("Serialization error: {0}")]
     SerializationError(String),
+
+    #[error("Symlink cycle detected: {0}")]
+    SymlinkCycle(String),
+
+    #[error("Symlink depth exceeded: max depth is {max_depth}")]
+    SymlinkDepthExceeded { max_depth: u32 },
+
+    #[error("Precondition failed: {0}")]
+    PreconditionFailed(String),
+
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
 }
 
 pub type Result<T> = std::result::Result<T, WebdavError>;

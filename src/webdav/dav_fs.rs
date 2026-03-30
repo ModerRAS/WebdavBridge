@@ -32,7 +32,7 @@ impl DavFileSystem for DavFs {
         let server = self.server.clone();
         Box::pin(async move {
             match server.handle_get(&path_str, None, None).await {
-                Ok(response) => Ok(Box::new(DavFileHandle::new(response)) as Box<dyn DavFile>),
+                Ok(response) => Ok(Box::new(DavFileHandle::new(response, server, path_str)) as Box<dyn DavFile>),
                 Err(crate::webdav::types::WebdavError::NotFound(_)) => Err(FsError::NotFound),
                 Err(_) => Err(FsError::GeneralFailure),
             }
@@ -74,19 +74,88 @@ impl DavFileSystem for DavFs {
             }
         })
     }
+
+    fn copy<'a>(&'a self, from: &'a DavPath, to: &'a DavPath) -> FsFuture<'a, ()> {
+        let from_str = from.as_url_string();
+        let to_str = to.as_url_string();
+        let server = self.server.clone();
+        Box::pin(async move {
+            match server.handle_copy(&from_str, &to_str, true).await {
+                Ok(_) => Ok(()),
+                Err(crate::webdav::types::WebdavError::NotFound(_)) => Err(FsError::NotFound),
+                Err(_) => Err(FsError::GeneralFailure),
+            }
+        })
+    }
+
+    fn rename<'a>(&'a self, from: &'a DavPath, to: &'a DavPath) -> FsFuture<'a, ()> {
+        let from_str = from.as_url_string();
+        let to_str = to.as_url_string();
+        let server = self.server.clone();
+        Box::pin(async move {
+            match server.handle_move(&from_str, &to_str, true).await {
+                Ok(_) => Ok(()),
+                Err(crate::webdav::types::WebdavError::NotFound(_)) => Err(FsError::NotFound),
+                Err(crate::webdav::types::WebdavError::Forbidden(_)) => Err(FsError::Forbidden),
+                Err(_) => Err(FsError::GeneralFailure),
+            }
+        })
+    }
+
+    fn remove_file<'a>(&'a self, path: &'a DavPath) -> FsFuture<'a, ()> {
+        let path_str = path.as_url_string();
+        let server = self.server.clone();
+        Box::pin(async move {
+            match server.handle_delete(&path_str).await {
+                Ok(_) => Ok(()),
+                Err(crate::webdav::types::WebdavError::NotFound(_)) => Err(FsError::NotFound),
+                Err(crate::webdav::types::WebdavError::Forbidden(_)) => Err(FsError::Forbidden),
+                Err(_) => Err(FsError::GeneralFailure),
+            }
+        })
+    }
+
+    fn remove_dir<'a>(&'a self, path: &'a DavPath) -> FsFuture<'a, ()> {
+        let path_str = path.as_url_string();
+        let server = self.server.clone();
+        Box::pin(async move {
+            match server.handle_delete(&path_str).await {
+                Ok(_) => Ok(()),
+                Err(crate::webdav::types::WebdavError::NotFound(_)) => Err(FsError::NotFound),
+                Err(crate::webdav::types::WebdavError::Forbidden(_)) => Err(FsError::Forbidden),
+                Err(_) => Err(FsError::GeneralFailure),
+            }
+        })
+    }
 }
 
-#[derive(Debug)]
 struct DavFileHandle {
     data: Bytes,
     offset: u64,
+    server: Arc<WebdavServer>,
+    path: String,
+    write_buf: Vec<u8>,
+}
+
+impl std::fmt::Debug for DavFileHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DavFileHandle")
+            .field("data_len", &self.data.len())
+            .field("offset", &self.offset)
+            .field("path", &self.path)
+            .field("write_buf_len", &self.write_buf.len())
+            .finish()
+    }
 }
 
 impl DavFileHandle {
-    fn new(response: crate::webdav::server::GetResponse) -> Self {
+    fn new(response: crate::webdav::server::GetResponse, server: Arc<WebdavServer>, path: String) -> Self {
         Self {
             data: response.bytes,
             offset: 0,
+            server,
+            path,
+            write_buf: Vec::new(),
         }
     }
 }
@@ -102,11 +171,19 @@ impl DavFile for DavFileHandle {
         })
     }
 
-    fn write_buf(&mut self, _buf: Box<dyn bytes::Buf + Send>) -> FsFuture<'_, ()> {
+    fn write_buf(&mut self, buf: Box<dyn bytes::Buf + Send>) -> FsFuture<'_, ()> {
+        let mut buf = buf;
+        while buf.has_remaining() {
+            let chunk = buf.chunk();
+            self.write_buf.extend_from_slice(chunk);
+            let len = chunk.len();
+            buf.advance(len);
+        }
         Box::pin(async { Ok(()) })
     }
 
-    fn write_bytes(&mut self, _buf: Bytes) -> FsFuture<'_, ()> {
+    fn write_bytes(&mut self, buf: Bytes) -> FsFuture<'_, ()> {
+        self.write_buf.extend_from_slice(&buf);
         Box::pin(async { Ok(()) })
     }
 
@@ -133,7 +210,19 @@ impl DavFile for DavFileHandle {
     }
 
     fn flush(&mut self) -> FsFuture<'_, ()> {
-        Box::pin(async { Ok(()) })
+        let body = Bytes::from(std::mem::take(&mut self.write_buf));
+        let server = self.server.clone();
+        let path = self.path.clone();
+        Box::pin(async move {
+            if body.is_empty() {
+                return Ok(());
+            }
+            match server.handle_put(&path, body).await {
+                Ok(_) => Ok(()),
+                Err(crate::webdav::types::WebdavError::Forbidden(_)) => Err(FsError::Forbidden),
+                Err(_) => Err(FsError::GeneralFailure),
+            }
+        })
     }
 }
 
