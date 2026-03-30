@@ -57,6 +57,31 @@ bytes = "1"
 # Async stream utilities
 futures-util = "0.3"
 
+# Web framework (routing, middleware)
+axum = { version = "0.8", features = ["ws", "macros"] }
+axum-extra = { version = "0.10", features = ["typed-header"] }
+tower = { version = "0.5", features = ["full"] }
+tower-http = { version = "0.6", features = ["fs", "cors", "trace"] }
+
+# Authentication
+jsonwebtoken = "9"
+bcrypt = "0.17"
+
+# Unique IDs
+uuid = { version = "1", features = ["v4"] }
+
+# Random number generation
+rand = "0.8"
+
+# WebSocket support
+tokio-tungstenite = "0.26"
+
+# Embedded frontend assets
+rust-embed = { version = "8", features = ["axum"] }
+
+# MIME type handling
+mime = "0.3"
+
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3"
