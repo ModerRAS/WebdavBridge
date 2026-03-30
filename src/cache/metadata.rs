@@ -89,6 +89,95 @@ impl MetadataCache {
             .map_err(|e| WebdavError::CacheError(e.to_string()))?;
         Ok(())
     }
+
+    /// Check if a path is a symlink
+    pub async fn is_symlink(&self, path: &str) -> bool {
+        self.get(path).await.map(|r| r.is_symlink).unwrap_or(false)
+    }
+
+    /// Get the symlink target for a path
+    pub async fn get_symlink_target(&self, path: &str) -> Option<String> {
+        self.get(path).await.and_then(|r| {
+            if r.is_symlink {
+                r.symlink_target
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Set the local override flag for a symlink
+    pub async fn set_local_override(&self, path: &str, has_override: bool) -> Result<(), WebdavError> {
+        if let Some(mut resource) = self.get(path).await {
+            resource.has_local_override = has_override;
+            self.put(&resource).await?;
+        }
+        Ok(())
+    }
+
+    /// Check if a symlink has a local override
+    pub async fn has_local_override(&self, path: &str) -> bool {
+        self.get(path).await.map(|r| r.has_local_override).unwrap_or(false)
+    }
+
+    /// Find all symlinks pointing to a specific upstream target
+    pub async fn get_by_target(&self, target: &str) -> Vec<WebdavResource> {
+        let mut results = Vec::new();
+        for item in self.tree.iter() {
+            if let Ok((_, value)) = item {
+                if let Ok(resource) = serde_json::from_slice::<WebdavResource>(&value) {
+                    if resource.is_symlink && resource.symlink_target.as_deref() == Some(target) {
+                        results.push(resource);
+                    }
+                }
+            }
+        }
+        results
+    }
+
+    /// Delete all symlinks pointing to a specific upstream target (cascade delete)
+    pub async fn delete_by_target(&self, target: &str) -> Result<Vec<String>, WebdavError> {
+        let symlinks = self.get_by_target(target).await;
+        let mut deleted_paths = Vec::new();
+        for symlink in &symlinks {
+            self.delete(&symlink.path).await?;
+            deleted_paths.push(symlink.path.clone());
+        }
+        Ok(deleted_paths)
+    }
+
+    /// Check for symlink cycles: would creating a symlink from `path` to `target` create a cycle?
+    /// Returns Ok(()) if safe, or an appropriate error if cyclic or too deep.
+    pub async fn check_symlink_safety(&self, path: &str, target: &str, max_depth: u32) -> Result<(), WebdavError> {
+        let mut current = target.to_string();
+        let mut depth = 0;
+        while depth < max_depth {
+            if current == path {
+                return Err(WebdavError::SymlinkCycle(
+                    format!("Cycle detected: {} -> ... -> {}", path, path),
+                ));
+            }
+            match self.get_symlink_target(&current).await {
+                Some(next_target) => {
+                    current = next_target;
+                    depth += 1;
+                }
+                None => return Ok(()),
+            }
+        }
+        // Check one last time if current == path after the loop
+        if current == path {
+            return Err(WebdavError::SymlinkCycle(
+                format!("Cycle detected: {} -> ... -> {}", path, path),
+            ));
+        }
+        Err(WebdavError::SymlinkDepthExceeded { max_depth })
+    }
+
+    /// Check for symlink cycles (backward-compatible convenience method)
+    pub async fn would_create_cycle(&self, path: &str, target: &str, max_depth: u32) -> bool {
+        self.check_symlink_safety(path, target, max_depth).await.is_err()
+    }
 }
 
 #[cfg(test)]
@@ -134,5 +223,200 @@ mod tests {
         
         let children = cache.get_children("/movies").await;
         assert_eq!(children.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_is_symlink() {
+        let temp_dir = TempDir::new().unwrap();
+        let cache = MetadataCache::open(temp_dir.path().join("test.db")).await.unwrap();
+
+        // Regular file is not a symlink
+        let regular = WebdavResource::new_file("/test.txt".to_string(), "test.txt".to_string(), 100);
+        cache.put(&regular).await.unwrap();
+        assert!(!cache.is_symlink("/test.txt").await);
+
+        // Symlink is a symlink
+        let symlink = WebdavResource::new_symlink(
+            "/link.txt".to_string(),
+            "link.txt".to_string(),
+            "/upstream/test.txt".to_string(),
+            false,
+            100,
+        );
+        cache.put(&symlink).await.unwrap();
+        assert!(cache.is_symlink("/link.txt").await);
+
+        // Non-existent path is not a symlink
+        assert!(!cache.is_symlink("/nonexistent").await);
+    }
+
+    #[tokio::test]
+    async fn test_get_symlink_target() {
+        let temp_dir = TempDir::new().unwrap();
+        let cache = MetadataCache::open(temp_dir.path().join("test.db")).await.unwrap();
+
+        let symlink = WebdavResource::new_symlink(
+            "/link.mp4".to_string(),
+            "link.mp4".to_string(),
+            "/upstream/test.mp4".to_string(),
+            false,
+            1024,
+        );
+        cache.put(&symlink).await.unwrap();
+
+        assert_eq!(
+            cache.get_symlink_target("/link.mp4").await,
+            Some("/upstream/test.mp4".to_string())
+        );
+
+        // Regular file has no symlink target
+        let regular = WebdavResource::new_file("/regular.mp4".to_string(), "regular.mp4".to_string(), 1024);
+        cache.put(&regular).await.unwrap();
+        assert_eq!(cache.get_symlink_target("/regular.mp4").await, None);
+    }
+
+    #[tokio::test]
+    async fn test_set_local_override() {
+        let temp_dir = TempDir::new().unwrap();
+        let cache = MetadataCache::open(temp_dir.path().join("test.db")).await.unwrap();
+
+        let symlink = WebdavResource::new_symlink(
+            "/link.mp4".to_string(),
+            "link.mp4".to_string(),
+            "/upstream/test.mp4".to_string(),
+            false,
+            1024,
+        );
+        cache.put(&symlink).await.unwrap();
+
+        assert!(!cache.has_local_override("/link.mp4").await);
+
+        cache.set_local_override("/link.mp4", true).await.unwrap();
+        assert!(cache.has_local_override("/link.mp4").await);
+
+        cache.set_local_override("/link.mp4", false).await.unwrap();
+        assert!(!cache.has_local_override("/link.mp4").await);
+    }
+
+    #[tokio::test]
+    async fn test_get_by_target() {
+        let temp_dir = TempDir::new().unwrap();
+        let cache = MetadataCache::open(temp_dir.path().join("test.db")).await.unwrap();
+
+        // Create two symlinks pointing to the same target
+        let link_a = WebdavResource::new_symlink(
+            "/a.mp4".to_string(), "a.mp4".to_string(),
+            "/upstream/test.mp4".to_string(), false, 1024,
+        );
+        let link_b = WebdavResource::new_symlink(
+            "/b.mp4".to_string(), "b.mp4".to_string(),
+            "/upstream/test.mp4".to_string(), false, 1024,
+        );
+        let link_c = WebdavResource::new_symlink(
+            "/c.mp4".to_string(), "c.mp4".to_string(),
+            "/upstream/other.mp4".to_string(), false, 2048,
+        );
+        cache.put(&link_a).await.unwrap();
+        cache.put(&link_b).await.unwrap();
+        cache.put(&link_c).await.unwrap();
+
+        let results = cache.get_by_target("/upstream/test.mp4").await;
+        assert_eq!(results.len(), 2);
+        let paths: Vec<&str> = results.iter().map(|r| r.path.as_str()).collect();
+        assert!(paths.contains(&"/a.mp4"));
+        assert!(paths.contains(&"/b.mp4"));
+
+        let results2 = cache.get_by_target("/upstream/other.mp4").await;
+        assert_eq!(results2.len(), 1);
+        assert_eq!(results2[0].path, "/c.mp4");
+    }
+
+    #[tokio::test]
+    async fn test_delete_by_target() {
+        let temp_dir = TempDir::new().unwrap();
+        let cache = MetadataCache::open(temp_dir.path().join("test.db")).await.unwrap();
+
+        let link_a = WebdavResource::new_symlink(
+            "/a.mp4".to_string(), "a.mp4".to_string(),
+            "/upstream/test.mp4".to_string(), false, 1024,
+        );
+        let link_b = WebdavResource::new_symlink(
+            "/b.mp4".to_string(), "b.mp4".to_string(),
+            "/upstream/test.mp4".to_string(), false, 1024,
+        );
+        cache.put(&link_a).await.unwrap();
+        cache.put(&link_b).await.unwrap();
+
+        let deleted = cache.delete_by_target("/upstream/test.mp4").await.unwrap();
+        assert_eq!(deleted.len(), 2);
+
+        assert!(cache.get("/a.mp4").await.is_none());
+        assert!(cache.get("/b.mp4").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_cycle_detection_no_cycle() {
+        let temp_dir = TempDir::new().unwrap();
+        let cache = MetadataCache::open(temp_dir.path().join("test.db")).await.unwrap();
+
+        // No cycle: /a -> /upstream/x (upstream path, not a symlink in cache)
+        assert!(!cache.would_create_cycle("/a", "/upstream/x", 3).await);
+    }
+
+    #[tokio::test]
+    async fn test_cycle_detection_direct_cycle() {
+        let temp_dir = TempDir::new().unwrap();
+        let cache = MetadataCache::open(temp_dir.path().join("test.db")).await.unwrap();
+
+        // /a -> /b exists
+        let link_a = WebdavResource::new_symlink(
+            "/a".to_string(), "a".to_string(), "/b".to_string(), false, 0,
+        );
+        cache.put(&link_a).await.unwrap();
+
+        // Would /b -> /a create a cycle? Yes!
+        assert!(cache.would_create_cycle("/b", "/a", 3).await);
+    }
+
+    #[tokio::test]
+    async fn test_cycle_detection_transitive_cycle() {
+        let temp_dir = TempDir::new().unwrap();
+        let cache = MetadataCache::open(temp_dir.path().join("test.db")).await.unwrap();
+
+        // Chain: /a -> /b, /b -> /c
+        let link_a = WebdavResource::new_symlink(
+            "/a".to_string(), "a".to_string(), "/b".to_string(), false, 0,
+        );
+        let link_b = WebdavResource::new_symlink(
+            "/b".to_string(), "b".to_string(), "/c".to_string(), false, 0,
+        );
+        cache.put(&link_a).await.unwrap();
+        cache.put(&link_b).await.unwrap();
+
+        // Would /c -> /a create a cycle? Yes (A->B->C->A)
+        assert!(cache.would_create_cycle("/c", "/a", 3).await);
+    }
+
+    #[tokio::test]
+    async fn test_cycle_detection_depth_exceeded() {
+        let temp_dir = TempDir::new().unwrap();
+        let cache = MetadataCache::open(temp_dir.path().join("test.db")).await.unwrap();
+
+        // Create a chain longer than max depth: /a -> /b -> /c -> /d
+        let link_a = WebdavResource::new_symlink(
+            "/a".to_string(), "a".to_string(), "/b".to_string(), false, 0,
+        );
+        let link_b = WebdavResource::new_symlink(
+            "/b".to_string(), "b".to_string(), "/c".to_string(), false, 0,
+        );
+        let link_c = WebdavResource::new_symlink(
+            "/c".to_string(), "c".to_string(), "/d".to_string(), false, 0,
+        );
+        cache.put(&link_a).await.unwrap();
+        cache.put(&link_b).await.unwrap();
+        cache.put(&link_c).await.unwrap();
+
+        // With max_depth=2, /e -> /a would exceed depth (A->B->C->D is 3 hops)
+        assert!(cache.would_create_cycle("/e", "/a", 2).await);
     }
 }

@@ -368,6 +368,7 @@ mod tests {
             max_depth: 10,
             server_bind: "127.0.0.1:8080".to_string(),
             server_prefix: "/".to_string(),
+            max_symlink_depth: 3,
         };
         
         let limiter = RateLimiter::new(2);
@@ -389,6 +390,7 @@ mod tests {
             max_depth: 10,
             server_bind: "127.0.0.1:8080".to_string(),
             server_prefix: "/".to_string(),
+            max_symlink_depth: 3,
         };
         
         let limiter = RateLimiter::new(2);

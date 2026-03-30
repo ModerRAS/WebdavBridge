@@ -33,6 +33,14 @@ pub struct Config {
 
     /// Server prefix path (e.g., "/webdav") (default: "/")
     pub server_prefix: String,
+
+    /// Maximum symlink resolution depth (default: 3)
+    #[serde(default = "default_max_symlink_depth")]
+    pub max_symlink_depth: u32,
+}
+
+fn default_max_symlink_depth() -> u32 {
+    3
 }
 
 impl Default for Config {
@@ -48,6 +56,7 @@ impl Default for Config {
             max_depth: 10,
             server_bind: "127.0.0.1:8080".to_string(),
             server_prefix: "/".to_string(),
+            max_symlink_depth: 3,
         }
     }
 }
