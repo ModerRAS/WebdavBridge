@@ -10,3 +10,4 @@ pub mod webdav;
 pub mod cache;
 pub mod tasks;
 pub mod resume;
+pub mod webui;
