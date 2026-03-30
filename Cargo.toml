@@ -1,0 +1,63 @@
+[package]
+name = "webdav-bridge"
+version = "0.1.0"
+edition = "2021"
+description = "WebDAV proxy with metadata caching and rate limiting for video/audio streaming"
+license = "MIT"
+repository = ""
+
+[dependencies]
+# WebDAV server
+dav-server = { version = "0.5", features = ["localfs"] }
+
+# HTTP server (for dav-server integration)
+hyper = { version = "1", features = ["full"] }
+http = "1"
+http-body = "1"
+http-body-util = "0.1"
+hyper-util = { version = "0.1", features = ["full"] }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["stream", "json", "rustls-tls"], default-features = false }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Caching (embedded database)
+sled = "0.34"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# Content-Type detection
+mime_guess = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "1"
+anyhow = "1"
+
+# URL parsing
+url = "2"
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Async traits
+async-trait = "0.1"
+
+# Bytes handling
+bytes = "1"
+
+# Async stream utilities
+futures-util = "0.3"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3"
+mockito = "1"
